@@ -1,2 +1,2 @@
 # python_ml
-random algorithms from bl
+random algorithms that i use
