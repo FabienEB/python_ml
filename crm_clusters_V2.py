@@ -19,8 +19,9 @@ from scipy.stats.stats import pearsonr as pr
 from datavirtuality.datavirtuality import DataVirtualityConnection
 
 
-
-with DataVirtualityConnection('fabien_baker','Fa$1bien') as dv_cnxn:
+from utilities.utilities import get_credentials
+cred = get_credentials()
+with DataVirtualityConnection(cred.data_virtuality_user, cred.data_virtuality_pw) as dv_cnxn:
 
             query_a = """
             select
