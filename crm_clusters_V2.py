@@ -40,20 +40,16 @@ y = matrix['unique_passenger_id']
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans
-
+from sklearn.cluster import MiniBatchKMeans
 scaler = StandardScaler()
 x_standardized = scaler.fit_transform(feature_x)
-
-
 #Set 7 centroids, there is a test for this based on the cohort size but I cant remember 
-cluster = KMeans(n_clusters=7)
+cluster_mini = MiniBatchKMeans(n_clusters=7)
 #matrix['cluster'] = cluster.fit_predict(x_standardized[x_standardized.columns[1:]])
-matrix['cluster'] = cluster.fit_predict(x_standardized)
-matrix.cluster.value_counts()
-
-
-matrix.to_csv("full_cluster_list_crm_v5.csv")
+matrix['cluster_mini'] = cluster_mini.fit_predict(x_standardized)
+#matrix.cluster.value_counts()
+#matrix.to_csv("full_cluster_list_crm_v5.csv")
+matrix.to_csv("full_cluster_list_crm_v9.csv")
 
 ##############################################################
 
