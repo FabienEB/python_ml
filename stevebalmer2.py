@@ -7,6 +7,11 @@ Created on Tue Jan  9 15:33:07 2018
 
 import random as rn
 
+#guess_array = []
+#for x in range(10000):
+#    guess_array.append(sb.steve(100))
+
+
 
 def steve(range_of_guess):
     winner = 0
@@ -16,7 +21,7 @@ def steve(range_of_guess):
 
     last_high = "x"
     last_low = "x"
-    guessarray = []
+    #guessarray = []
     
     
     
@@ -52,9 +57,10 @@ def steve(range_of_guess):
            winnner = 1
            #print('-------')
            #print(guess)
-           print(guesstaken)
+           #print(guesstaken)
            #print('winner!')
-           guessarray.append(guesstaken)
+           #guessarray.append(guesstaken)
            break
+    return guesstaken
     
     
