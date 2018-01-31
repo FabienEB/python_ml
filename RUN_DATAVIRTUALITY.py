@@ -20,7 +20,7 @@ from datavirtuality.datavirtuality import DataVirtualityConnection
 
 
 
-with DataVirtualityConnection('fabien_baker','Fa$1bien') as dv_cnxn:
+with DataVirtualityConnection(username,password) as dv_cnxn:
 
             query_a = """
             SELECT
