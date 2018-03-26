@@ -1,0 +1,252 @@
+
+
+SET mapred.job.queue.name=apacx_crm;
+SET hive.execution.engine=spark;
+SET hive.exec.compress.output=true;
+SET hive.exec.compress.intermediate=true;
+SET hive.exec.reducers.max=100;
+SET hive.exec.parallel=true;
+SET hive.exec.dynamic.partition=true;
+SET hive.exec.dynamic.partition.mode=nonstrict;
+SET hive.mapred.mode=nonstrict;
+SET hive.strict.checks.large.query = false;
+SET hive.auto.convert.join = true;
+SET hive.auto.convert.join.noconditionaltask=true;
+SET hive.auto.convert.join.noconditionaltask.size=90000000;
+SET mapred.output.compression.type=BLOCK;
+SET mapred.output.compression.codec=org.apache.hadoop.io.compress.SnappyCodec;
+SET mapred.reduce.tasks=32;
+SET orc.stripe.size=268435456;
+SET hive.map.aggr=false;
+SET hive.merge.mapfiles=true;
+SET hive.merge.mapredfiles=true;
+SET mapred.max.split.size=500000000;
+SET mapred.min.split.size=500000000;
+SET hive.merge.smallfiles.avgsize=500000000;
+SET hive.merge.size.per.task=500000000;
+SET mapreduce.map.memory.mb=4096;
+SET mapreduce.reduce.memory.mb=4096;
+
+
+with y_label as (
+
+SELECT
+es.user_uuid as eater_uuid, 
+---SENA CHURN 
+case when cast(ae.last_eats_trip_request_timestamp as date) <= date_add('day',-91,cast(now() as date)) --70% prob
+      THEN 1 ELSE 0 END AS y_predict_07,
+case when cast(ae.last_eats_trip_request_timestamp as date) <= date_add('day',-70,cast(now() as date)) --70% prob
+      THEN 1 ELSE 0 END AS y_predict_06,
+case when cast(ae.last_eats_trip_request_timestamp as date) <= date_add('day',-56,cast(now() as date)) --70% prob
+      THEN 1 ELSE 0 END AS y_predict_05
+
+
+from apacx_crm.apacx_segmentation_eater es-- on es.user_uuid = e.eater_uuid 
+join dwh.analytics_eater ae on ae.eater_uuid = es.user_uuid 
+--join dwh.dim_city cc on cccity_id = ae.most_freq_eats_city_id
+
+--where cc.country_name not in ('Australia','New Zealand','Korea, Republic of (South Korea)','Japan','Taiwan (ROC)')
+where es.country_name not in ('Australia','New Zealand','Korea, Republic of (South Korea)','Japan','Taiwan (ROC)')
+and cast(es.datestr as date) between date_add('day',-7,cast(now() as date)) and date_add('day',-1,cast(now() as date))
+and ae.first_eats_trip_request_timestamp >=TIMESTAMP '2017-01-01 00:00:00'
+and es.lifetime_completed_trips >= 4
+--group by 1 
+
+), r2e as(
+
+SELECT
+ae.eater_uuid 
+,case when ar.first_trip_request_timestamp is null then 0 else 1 end as is_eater_only
+,case when ar.first_trip_request_timestamp is not null 
+       and first_trip_request_timestamp < ae.first_eats_trip_request_timestamp  then 1 else 0 end as is_r2e
+
+,case when ar.first_trip_request_timestamp is not null 
+       and ar.first_trip_request_timestamp > ae.first_eats_trip_request_timestamp  then 1 else 0 end as is_e2r
+
+FROM dwh.analytics_eater ae 
+join dwh.dim_city c on c.city_id = coalesce(ae.most_freq_eats_city_id, ae.first_eats_trip_city_id)
+left join dwh.analytics_client ar on ae.eater_uuid = ar.user_uuid
+where 1=1
+and c.country_name not in ('Australia','New Zealand','Korea, Republic of (South Korea)','Japan','Taiwan (ROC)')
+and ae.first_eats_trip_request_timestamp >=TIMESTAMP '2017-01-01 00:00:00')
+, channel as (
+
+select 
+
+ae.eater_uuid, 
+channel||'-'||channel_group as channel_concat
+
+from euclid.fact_eats_order_attribution ae 
+JOIN apacx_crm.apacx_segmentation_eater e  on ae.eater_uuid = e.user_uuid 
+where cast(e.datestr as date) between date_add('day',-7,cast(now() as date)) and date_add('day',-1,cast(now() as date)) 
+
+group by 1,2  order by 1 )
+------------------------------------------------------------------------------
+, seg_slide as (  
+
+with lifestage as 
+(
+
+SELECT 
+user_uuid, 
+life_stage,
+min(datestr) as first_weekdate_entered_lifestage,
+max(datestr) as last_weekdate_entered_lifestage
+
+
+from apacx_crm.apacx_segmentation_eater es
+join dwh.analytics_eater ae on ae.eater_uuid = es.user_uuid 
+join dwh.dim_city cc on cc.city_id = ae.most_freq_eats_city_id
+where cc.city_name = 'Singapore'
+group by 1,2
+order by 1,3 asc 
+)
+
+SELECT 
+l.user_uuid, 
+max(date_diff('day',case when life_stage = 'Signup' then l.first_weekdate_entered_lifestage else null end,case when life_stage = 'Early Eater' then l.first_weekdate_entered_lifestage else null end)) as signup_to_early,
+max(date_diff('day',case when life_stage = 'Early Eater' then l.first_weekdate_entered_lifestage else null end,case when life_stage = 'Mature Eater' then l.first_weekdate_entered_lifestage else null end)) as early_to_mature
+
+FROM lifestage l
+GROUP BY 1
+
+------------------------------------------------------------------------------
+
+
+
+), average_life_time as 
+
+(select 
+       fem.client_uuid as eater_uuid 
+      ,fem.order_trip_uuid
+      ,fem.restaurant_uuid
+      ,fem.city_id
+      ,fem.datestr
+      ,case when eater_device = 'iphone' then 1 else 0 end as is_iphone
+      ,case when eater_device = 'android' then 1 else 0 end as is_android
+      ,case when eater_device = 'eats-web' then 1 else 0 end as is_web
+      ,fem.destination_string
+      ,fem.count_distinct_skus
+      ,fem.count_skus
+      ,day_of_week(fem.eater_request_timestamp_local) as dow_ordered_local
+      ,CASE WHEN fem.eater_promo_usd<>0 THEN fem.workflow_uuid END AS promo_trip_net
+      ,fem.workflow_uuid AS trip_net
+      ,fem.original_eater_fare_usd AS gb_net
+      ,fem.eater_promo_usd AS promo_gb_net  
+      ,es.first_eats_trip_request_timestamp
+      ,es.last_eats_trip_request_timestamp
+      ,fem.eater_request_timestamp_local
+      ,fem.restaurant_accept_timestamp_local
+      ,fem.courier_arrival_pickup_timestamp_local
+      ,fem.courier_dropoff_timestamp_local 
+      ,(fem.eater_etd/60)*1.00 as etd 
+      ,date_diff('minute',eater_request_timestamp_local,courier_dropoff_timestamp_local) AS order_to_dropoff
+      ,row_number() over(partition by fem.client_uuid order by fem.datestr desc) as orders_desc
+      ,row_number() over(partition by fem.client_uuid order by fem.datestr asc) as orders_asc
+
+      from dwh.analytics_eater es-- on es.user_uuid = e.eater_uuid
+      join dwh.fact_eats_trip fem on fem.client_uuid = es.eater_uuid 
+      join dwh.dim_merchant dm on dm.uuid = fem.restaurant_uuid
+      join dwh.dim_city cc on cc.city_id = fem.city_id 
+      where 1=1
+      and fem.is_completed = TRUE
+      and cc.country_name not in ('Australia','New Zealand','Korea, Republic of (South Korea)','Japan','Taiwan (ROC)')
+      --group by 1,2,3,4,5,6,7
+) , app_session as 
+
+(
+
+
+select 
+user_id as eater_uuid,
+MAX(datestr) as date_last_logged
+from raw_etl_data.mobile_event_user_eats_app
+group by 1
+
+)
+
+
+------------------------------------------------------------
+/*,eats_funnel as
+(select efs.city_id
+       ,efs.user_id
+      -- carousel
+      ,SUM_FLOAT(case when did_view_carousel then 1 else 0 end) as view_carousel_count
+      ,SUM_FLOAT(COALESCE(did_view_carousel_last_at-did_view_carousel_first_at,0)/1000) as view_carousel_time
+      ,SUM_FLOAT(case when did_view_carousel_item then 1 else 0 end) as view_carousel_item_count
+      ,SUM_FLOAT(COALESCE(did_view_carousel_item_last_at-h_item_first_at,0)/1000) as view_carousel_item_time
+      ,SUM_FLOAT(case when did_click_carousel_item then 1 else 0 end) as click_carousel_item_count
+      ,SUM_FLOAT(COALESCE(did_click_carousel_item_last_at-did_click_carousel_item_first_at,0)/1000) as click_carousel_item_time
+      -- item
+      ,SUM_FLOAT(case when did_add_item_to_cart then 1 else 0 end) as add_item_count
+      ,SUM_FLOAT(COALESCE(did_add_item_to_cart_last_at-did_add_item_to_cart_first_at,0)/1000) as add_item_time
+      -- suggest
+      ,SUM_FLOAT(case when did_see_auto_suggest then 1 else 0 end) as see_suggest_count
+      ,SUM_FLOAT(COALESCE(did_see_auto_suggest_last_at-did_see_auto_suggest_first_at,0)/1000) as see_suggest_time
+      ,SUM_FLOAT(case when did_click_auto_suggest then 1 else 0 end) as click_suggest_count
+      ,SUM_FLOAT(COALESCE(did_click_auto_suggest_last_at-did_click_auto_suggest_first_at,0)/1000) as click_suggest_time
+      ,SUM_FLOAT(case when did_click_auto_suggest_store then 1 else 0 end) as click_suggest_store_count
+      ,SUM_FLOAT(COALESCE(did_click_auto_suggest_store_last_at-did_click_auto_suggest_store_first_at,0)/1000) as click_suggest_store_time
+      -- search
+      ,SUM_FLOAT(case when did_search then 1 else 0 end) as search_count
+      ,SUM_FLOAT(COALESCE(did_search_last_at-did_search_first_at,0)/1000) as search_time
+      ,SUM_FLOAT(case when did_click_suggested_searches then 1 else 0 end) as click_suggested_search_count
+      ,SUM_FLOAT(COALESCE(did_click_suggested_searches_last_at-did_click_suggested_searches_first_at,0)/1000) as click_suggested_searches_time
+      ,SUM_FLOAT(case when did_enter_search then 1 else 0 end) as enter_search_count
+      ,SUM_FLOAT(COALESCE(did_enter_search_last_at-did_enter_search_first_at,0)/1000) as enter_search_time
+      -- marketplace
+      ,SUM_FLOAT(case when did_view_marketplace_store then 1 else 0 end) as view_marketplace_count
+      ,SUM_FLOAT(COALESCE(did_view_marketplace_store_last_at-did_view_marketplace_store_first_at,0)/1000) as view_marketplace_time
+      ,SUM_FLOAT(case when did_click_marketplace_store then 1 else 0 end) as click_marketplace_count
+      ,SUM_FLOAT(COALESCE(did_click_marketplace_store_last_at-did_click_marketplace_store_first_at,0)/1000) as click_marketplace_time
+      -- store
+      ,SUM_FLOAT(case when did_view_store then 1 else 0 end) as view_store_count
+      ,SUM_FLOAT(COALESCE(did_view_store_last_at-did_view_store_first_at,0)/1000) as view_store_time
+      ,SUM_FLOAT(case when did_click_store_item then 1 else 0 end) as click_store_count
+      ,SUM_FLOAT(COALESCE(did_click_store_item_last_at-did_click_store_item_first_at,0)/1000) as click_store_time
+      ,SUM_FLOAT(case when did_click_store_in_search_results then 1 else 0 end) as click_store_search_count
+      ,SUM_FLOAT(COALESCE(did_click_store_in_search_results_last_at-did_click_store_in_search_results_first_at,0)/1000) as click_store_search_time
+      -- request
+      ,SUM_FLOAT(case when did_request then 1 else 0 end) as request_count
+      ,SUM_FLOAT(COALESCE(did_request_last_at-did_request_first_at,0)/1000) as reqeust_time
+      
+ from eats_funnel_summary_v3 efs
+ join sample s
+ on efs.city_id=s.city_id
+ and efs.user_id=s.user_uuid
+ --and  to_timestamp(efs.session_start_time_ms/1000) < eats.first_eats_trip_request_timestamp -- only take app interactions before first EATS orders
+ where 1=1 
+ and efs.city_id in (44)
+ and efs.user_id is not null
+ and efs.user_id <> ''
+ and efs.datestr::DATE < s.signup_timestamp + interval '28' day -- EATS funnel upper bound
+ and efs.datestr >= ('{{feature_date}}'::DATE - interval '120' day)::VARCHAR
+ and efs.datestr < '{{feature_date}}'
+ group by 1,2
+) */
+
+
+select
+
+y_label.y_predict_07
+  is_eater_only
+, case when cast(app.date_last_logged as date) > cast( allo.last_eats_trip_request_timestamp as date) then 1 else 0 end as logged_in_since_last_order
+, (avg(lsto.order_to_dropoff-lsto.etd))/(avg(lsto.etd)*1.0) as delivery_etd_accuracy_lo -- higher the worse 
+, (avg(allo.order_to_dropoff-allo.etd))/(avg(allo.etd)*1.0) as delivery_etd_accuracy_allo -- higher the worse 
+, (count(distinct allo.trip_net)-count(distinct allo.promo_trip_net))/(count(distinct allo.trip_net)*1.0) as promo_trip_concentration 
+, COUNT(DISTINCT case when allo.is_iphone = 1 or allo.is_android = 1 then allo.trip_net else null end )/(count(distinct allo.trip_net)*1.0) as iphone_concentration
+, AVG(allo.count_skus) as avg_sku
+, COUNT(distinct allo.restaurant_uuid )/(COUNT(allo.restaurant_uuid )*1.0) AS restaurant_concentration
+, COUNT(distinct allo.dow_ordered_local )/(COUNT(allo.dow_ordered_local )*1.0) AS dow_concentration
+, avg(allo.gb_net) as avg_basket 
+, avg(lsto.gb_net) as last_order_bucket 
+      
+
+FROM y_label 
+JOIN r2e on r2e.eater_uuid = y_label.eater_uuid
+JOIN app_session app on app.eater_uuid = y_label.eater_uuid
+JOIN average_life_time lsto on lsto.eater_uuid = y_label.eater_uuid and lsto.orders_desc = 1
+JOIN average_life_time allo on lsto.eater_uuid = y_label.eater_uuid 
+GROUP BY 1,2,3 
+
+
